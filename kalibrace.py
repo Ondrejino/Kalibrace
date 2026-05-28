@@ -1,43 +1,37 @@
 import streamlit as st
-import pyproj
 from pyproj import Transformer
 
-# Aktivace přesných českých mřížek
-pyproj.network.set_network_enabled(active=True)
+st.title("🧮 Kalkulátor posunu (Opraveno)")
+st.info("Ořezáno čistě na 2D (bez výšek), aby nepadal výpočet.")
 
-st.title("🧮 Neomylný kalkulátor posunu")
-st.info("Zadej souřadnice ze stejného fyzického bodu (např. z tvého křížku).")
-
-# Transformátory
+# Převedeme Křováka 2D rovnou do GPS 2D (WGS84). 
+# Žádné složité mřížky, takže žádné -inf.
 @st.cache_resource
-def get_transformers():
-    t_to_jtsk = Transformer.from_crs("EPSG:4937", "EPSG:5514+5705", always_xy=True)
-    return t_to_jtsk
+def get_transformer():
+    return Transformer.from_crs("EPSG:5514", "EPSG:4326", always_xy=True)
 
-t_to_jtsk = get_transformers()
+t_to_gps = get_transformer()
 
 col1, col2 = st.columns(2)
-
 with col1:
-    st.subheader("1. Data z Roveru (Sitech)")
-    y_sit = st.number_input("Y (S-JTSK, záporné)", value=-730744.000, format="%.3f", step=1.0)
-    x_sit = st.number_input("X (S-JTSK, záporné)", value=-1045566.000, format="%.3f", step=1.0)
+    st.subheader("1. Křížek ze Sitechu")
+    y_sit = st.number_input("Y (Záporné)", value=-730744.000, format="%.3f")
+    x_sit = st.number_input("X (Záporné)", value=-1045566.000, format="%.3f")
 
 with col2:
-    st.subheader("2. Data z Válce (Ammann)")
-    lat_am = st.number_input("Latitude (WGS84)", value=49.2793000, format="%.7f", step=0.00001)
-    lon_am = st.number_input("Longitude (WGS84)", value=17.0212000, format="%.7f", step=0.00001)
+    st.subheader("2. Křížek z Válce")
+    lat_am = st.number_input("Latitude", value=49.2793000, format="%.7f")
+    lon_am = st.number_input("Longitude", value=17.0212000, format="%.7f")
 
-if st.button("Vypočítat korekční konstanty", type="primary"):
-    # 1. Převod Ammann WGS84 na hrubý S-JTSK
-    # (Výšku dáme průměrnou 250m, pro polohu to udělá rozdíl v desetinách milimetru, takže je to jedno)
-    y_am, x_am, _ = t_to_jtsk.transform(lon_am, lat_am, 250.0)
+if st.button("Vypočítat posun ve stupních", type="primary"):
+    # Transformace pouze X a Y (bez výšky)
+    lon_sit, lat_sit = t_to_gps.transform(y_sit, x_sit)
     
-    # 2. Výpočet čistého rozdílu
-    delta_y = y_sit - y_am
-    delta_x = x_sit - x_am
+    # Výpočet rozdílu
+    delta_lat = lat_sit - lat_am
+    delta_lon = lon_sit - lon_am
     
-    st.success("✅ Hotovo. Tyto hodnoty zadej do svých hlavních programů.")
+    st.success("✅ Vypočítáno.")
     col3, col4 = st.columns(2)
-    col3.metric("KOREKCE Y", f"{delta_y:+.3f} m")
-    col4.metric("KOREKCE X", f"{delta_x:+.3f} m")
+    col3.metric("Korekce Latitude", f"{delta_lat:+.8f}")
+    col4.metric("Korekce Longitude", f"{delta_lon:+.8f}")
