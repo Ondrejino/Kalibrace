@@ -1,48 +1,62 @@
 import streamlit as st
-from pyproj import Geod, Transformer
+import pandas as pd
+import numpy as np
+from pyproj import Geod
+import io
 
-st.title("🧮 Ultimátní Kalibrátor (s posunem antény na běhoun)")
-st.info("Aplikuje tvou vlastní Geod logiku přímo na manuálně zadaný bod z kabiny.")
+st.title("🎯 Kalibrátor Ammann (Export na křížky)")
 
-col1, col2 = st.columns(2)
+# 1. NAHRÁNÍ
+uploaded_file = st.file_uploader("CSV z válce", type=['csv'])
+offset_m = st.number_input("Podélný offset (m) - anténa za běhounem", value=2.0)
+offset_transverse_m = st.number_input("Příčný offset (m) - (-0.2 = vlevo)", value=-0.2)
 
-with col1:
-    st.subheader("1. Křížek ze Sitechu (S-JTSK)")
-    y_sit = st.number_input("Y (Záporné)", value=-730744.00, format="%.2f")
-    x_sit = st.number_input("X (Záporné)", value=-1045566.00, format="%.2f")
-
-with col2:
-    st.subheader("2. Data z kabiny Ammann (GPS)")
-    lat_am = st.number_input("Latitude (Anténa z CSV)", value=49.2793000, format="%.7f")
-    lon_am = st.number_input("Longitude (Anténa z CSV)", value=17.0212000, format="%.7f")
-    # Musíš zadat směr, kterým válec na křížku zrovna stál, aby se ty 2 metry hodily správným směrem
-    azimut = st.number_input("Azimut jízdy (0=S, 90=V, 180=J, 270=Z)", value=90.0, step=1.0)
-
-st.subheader("3. Parametry stroje (jako v hlavním kódu)")
-col3, col4 = st.columns(2)
-with col3:
-    offset_m = st.number_input("Podélný posun anténa -> běhoun (m)", value=2.0, step=0.1)
-with col4:
-    offset_transverse_m = st.number_input("Příčný posun (m)", value=0.20, step=0.05)
-
-if st.button("Vypočítat finální posun (v metrech)", type="primary"):
+if uploaded_file:
+    # Načtení (bez filtrace rychlosti!)
+    df = pd.read_csv(uploaded_file, sep=None, engine='python')
+    df.columns = df.columns.str.strip()
+    
+    # Detekce sloupce času a pozice
+    lat_col = [c for c in df.columns if 'lat' in c.lower()][0]
+    lon_col = [c for c in df.columns if 'lon' in c.lower()][0]
+    time_col = [c for c in df.columns if 'time' in c.lower()][0]
+    dir_col = [c for c in df.columns if 'dir' in c.lower()][0]
+    
     geod = Geod(ellps="WGS84")
     
-    # --- TVOJE GEOMETRICKÁ LOGIKA ---
+    # Výpočet azimutu z pojezdu před zastavením
+    # Potřebujeme posunout anténu na běhoun
+    # Pokud jsi jel 20m, azimut z jízdy je stabilní
+    
+    # Jednoduchý výpočet směru z předchozího bodu
+    df['lat_prev'] = df[lat_col].shift(1)
+    df['lon_prev'] = df[lon_col].shift(1)
+    
+    def get_azimuth(row):
+        _, az, _ = geod.inv(row['lon_prev'], row['lat_prev'], row[lon_col], row[lat_col])
+        return az
+
+    df['azimuth'] = df.apply(get_azimuth, axis=1)
+    
+    # Aplikace tvé geometrie (Anténa -> Běhoun)
     # 1. Podélný posun
-    mid_lon, mid_lat, _ = geod.fwd(lon_am, lat_am, azimut, offset_m)
-    # 2. Příčný posun (+90 stupňů doprava)
-    drum_lon, drum_lat, _ = geod.fwd(mid_lon, mid_lat, (azimut + 90) % 360, offset_transverse_m)
+    lons_mid, lats_mid, _ = geod.fwd(df[lon_col], df[lat_col], df['azimuth'], np.full(len(df), offset_m))
+    # 2. Příčný posun
+    df['final_lon'], df['final_lat'], _ = geod.fwd(lons_mid, lats_mid, (df['azimuth'] + 90) % 360, np.full(len(df), offset_transverse_m))
     
-    # --- BEZPEČNÝ PŘEVOD DO 2D KŘOVÁKA ---
-    t_to_jtsk = Transformer.from_crs("EPSG:4326", "EPSG:5514", always_xy=True)
-    y_am, x_am = t_to_jtsk.transform(drum_lon, drum_lat)
+    st.subheader("Vyberte bod, kdy jsi stál na křížku")
+    st.dataframe(df[[time_col, 'final_lat', 'final_lon']])
     
-    # --- VÝPOČET ROZDÍLU ---
-    delta_y = y_sit - y_am
-    delta_x = x_sit - x_am
+    idx = st.number_input("Index řádku, kde jsi byl na křížku:", min_value=0, max_value=len(df)-1)
     
-    st.success("✅ Vypočítáno! Geometrie stroje zohledněna.")
-    res1, res2 = st.columns(2)
-    res1.metric("Finální Korekce Y", f"{delta_y:+.3f} m")
-    res2.metric("Finální Korekce X", f"{delta_x:+.3f} m")
+    st.subheader("Zadejte Sitech souřadnice")
+    y_sit = st.number_input("Sitech Y", format="%.3f")
+    x_sit = st.number_input("Sitech X", format="%.3f")
+    
+    if st.button("Vypočítat korekční vektor"):
+        from pyproj import Transformer
+        t = Transformer.from_crs("EPSG:4326", "EPSG:5514", always_xy=True)
+        y_am, x_am = t.transform(df.loc[idx, 'final_lon'], df.loc[idx, 'final_lat'])
+        
+        st.metric("Delta Y (m)", f"{y_sit - y_am:.3f}")
+        st.metric("Delta X (m)", f"{x_sit - x_am:.3f}")
